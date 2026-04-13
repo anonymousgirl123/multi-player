@@ -1,0 +1,71 @@
+# docker-compose.yml — multi-process scenario
+#
+# Starts two containers (responder + initiator) on an isolated bridge network.
+# The responder binds port 9090 inside the network; the initiator connects to
+# it by service name ("responder") which Docker's embedded DNS resolves.
+#
+# Usage:
+#   docker compose up --build        # build image (first time or after source changes)
+#   docker compose up                # run with cached image
+#   docker compose down              # stop and remove containers + network
+#
+# Configuration overrides (without rebuilding):
+#   docker compose up -e JAVA_OPTS="-Dlog.level=DEBUG"
+#
+# To run the same-process scenario instead, use:
+#   docker run --rm $(docker compose images -q player-messaging) same-process
+
+services:
+
+  # ── Responder ───────────────────────────────────────────────────────────────
+  # Binds a ServerSocket on port 9090 and waits for the initiator to connect.
+  # Exits passively when it receives the poison-pill forwarded by the initiator.
+  responder:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime          # use the slim runtime stage, not the builder
+    image: player-messaging:latest
+    command: ["responder"]
+    environment:
+      # Override any configuration key at runtime without rebuilding the image.
+      # Example: JAVA_OPTS: "-Dlog.level=DEBUG -Dmax.messages=20"
+      JAVA_OPTS: ""
+    networks:
+      - messaging-net
+    # Publish the responder's TCP port to the host so you can also connect
+    # from the host with:  java -jar target/player-multi-process.jar initiator
+    ports:
+      - "9090:9090"
+
+  # ── Initiator ───────────────────────────────────────────────────────────────
+  # Connects to the responder, sends the opening message, and drives the
+  # conversation to completion.
+  #
+  # Why depends_on with condition service_started?
+  # Docker starts containers in parallel by default.  Without depends_on the
+  # initiator may attempt to connect before the responder's ServerSocket is
+  # bound, causing "Connection refused".  service_started ensures Docker starts
+  # the responder container first; the initiator's own reconnect-with-backoff
+  # logic then handles any residual race (the responder may still be in JVM
+  # startup when the initiator first tries to connect).
+  initiator:
+    image: player-messaging:latest
+    command: ["initiator"]
+    environment:
+      # Tell the initiator to connect to "responder" (Docker DNS) instead of
+      # the default "localhost".  ConfigLoader promotes all System properties,
+      # so -D flags here take precedence over configuration.properties.
+      JAVA_OPTS: "-Dserver.host=responder"
+    depends_on:
+      responder:
+        condition: service_started
+    networks:
+      - messaging-net
+
+networks:
+  # An isolated bridge network so the two containers can reach each other by
+  # service name without polluting the host network or conflicting with other
+  # Docker projects.
+  messaging-net:
+    driver: bridge

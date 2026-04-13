@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Logback configuration for the player-messaging application.
+
+    WHY a separate logback.xml instead of using Logback's default config?
+    Logback's default prints a minimal pattern without timestamps, thread names,
+    or log levels — not useful for debugging concurrency or measuring latency.
+    This file gives us a consistent, structured format across all environments
+    and lets operators tune the log level via configuration.properties without
+    recompiling.
+
+    LOG LEVEL PRECEDENCE (highest wins):
+      1. System property:  -Dlog.level=DEBUG
+      2. configuration.properties key: log.level=INFO
+      3. Default (fallback): INFO
+
+    HOW to change the level at runtime (no recompile):
+      java -Dlog.level=DEBUG -jar player-same-process.jar
+-->
+<configuration>
+
+    <!--
+        Read the desired log level from the system property "log.level".
+        The application's ConfigLoader injects configuration.properties values
+        as system properties at startup, so setting log.level=DEBUG in
+        configuration.properties automatically flows through here.
+        The default fallback is INFO if the property is absent.
+    -->
+    <property name="LOG_LEVEL" value="${log.level:-INFO}" />
+
+    <!--
+        Console appender — writes to stdout.
+
+        Pattern breakdown:
+          %d{HH:mm:ss.SSS}  — wall-clock timestamp (millisecond resolution)
+                               Useful for latency analysis across log lines.
+          [%thread]          — thread name (e.g. "vthread-PlayerA")
+                               Identifies which virtual thread emitted the line.
+          %-5level           — log level left-padded to 5 chars (INFO , DEBUG, etc.)
+          %logger{20}        — logger name truncated to 20 chars (class short name)
+          %msg               — the formatted log message
+          %n                 — platform line separator
+
+        Why not %class or %method?  They require stack-trace walking and add
+        significant overhead on every log call.  The logger name (%logger)
+        identifies the class without that cost.
+    -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{20} – %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!--
+        Root logger — applies to all classes unless overridden by a child logger.
+        Level comes from the LOG_LEVEL property defined above.
+    -->
+    <root level="${LOG_LEVEL}">
+        <appender-ref ref="CONSOLE" />
+    </root>
+
+    <!--
+        Suppress noisy INFO output from Logback's own startup diagnostics.
+        These lines clutter the output during normal runs and are only useful
+        when debugging a Logback misconfiguration.
+    -->
+    <logger name="ch.qos.logback" level="WARN" />
+
+</configuration>

@@ -1,0 +1,252 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+             http://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.playermessaging</groupId>
+    <artifactId>player-messaging</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+
+    <name>Player Messaging</name>
+    <description>
+        Player-to-player messaging system demonstrating two communication models:
+        1. Same JVM process using in-memory queues (BlockingQueue).
+        2. Separate JVM processes communicating over TCP sockets.
+    </description>
+
+    <properties>
+        <!--
+            Java 21 is required for virtual threads (Thread.ofVirtual()).
+            Virtual threads (JEP 444, GA in Java 21) are lightweight OS-thread
+            substitutes managed by the JVM scheduler rather than the OS.  Spinning
+            up one per player costs ~1 KB of heap versus ~1 MB for a platform thread,
+            making it trivial to run thousands of concurrent players.
+        -->
+        <maven.compiler.source>21</maven.compiler.source>
+        <maven.compiler.target>21</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+
+    <dependencies>
+        <!--
+            SLF4J API – the standard logging facade for Java.
+            Why SLF4J and not java.util.logging or Log4j directly?
+            SLF4J decouples the logging API (used in application code) from the
+            logging implementation (Logback, Log4j2, java.util.logging, etc.).
+            Swapping the implementation requires replacing one jar — no source
+            changes.  All major libraries already use SLF4J, so there is no
+            classpath conflict.
+        -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <version>2.0.13</version>
+        </dependency>
+
+        <!--
+            Logback Classic – the production SLF4J implementation.
+            Why Logback and not Log4j2?
+            Logback was written by the SLF4J author and has zero-configuration
+            defaults, rich pattern layouts, automatic log rolling, and is the
+            most common choice in Spring Boot / enterprise Java.  It also has
+            no CVE history as severe as Log4Shell.
+        -->
+        <dependency>
+            <groupId>ch.qos.logback</groupId>
+            <artifactId>logback-classic</artifactId>
+            <version>1.5.6</version>
+        </dependency>
+
+        <!--
+            JMH (Java Microbenchmark Harness) – the gold-standard tool for
+            microbenchmarks on the JVM.  It handles JIT warm-up, dead-code
+            elimination prevention, and statistical reporting so our benchmark
+            numbers are meaningful and reproducible.
+        -->
+        <dependency>
+            <groupId>org.openjdk.jmh</groupId>
+            <artifactId>jmh-core</artifactId>
+            <version>1.37</version>
+        </dependency>
+        <dependency>
+            <groupId>org.openjdk.jmh</groupId>
+            <artifactId>jmh-generator-annprocess</artifactId>
+            <version>1.37</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!--
+            JUnit 5 (Jupiter) – test scope only; never included in the fat-jars.
+            JUnit is the de-facto standard JVM test framework.  It is a test
+            tool, not an application framework, so its presence does not
+            contradict the "pure Java, no Spring" requirement.
+        -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>5.11.0</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!--
+                maven-compiler-plugin: explicit configuration required so the
+                JMH annotation processor (jmh-generator-annprocess) is invoked
+                during compilation on Java 21.  Without this block the processor
+                is silently skipped and JMH cannot find META-INF/BenchmarkList
+                at runtime, causing "Unable to find the resource" errors.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.13.0</version>
+                <configuration>
+                    <source>21</source>
+                    <target>21</target>
+                    <annotationProcessorPaths>
+                        <path>
+                            <groupId>org.openjdk.jmh</groupId>
+                            <artifactId>jmh-generator-annprocess</artifactId>
+                            <version>1.37</version>
+                        </path>
+                    </annotationProcessorPaths>
+                </configuration>
+            </plugin>
+
+            <!--
+                maven-surefire-plugin 3.x is required to discover and run
+                JUnit 5 (Jupiter) tests.  Maven's default surefire version (2.x)
+                only supports JUnit 4; without this explicit upgrade, running
+                `mvn test` silently skips all JUnit 5 test classes.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.3.1</version>
+            </plugin>
+
+            <!--
+                fmt-maven-plugin: wraps google-java-format so that
+                `./mvnw fmt:format` reformats all Java source files in-place,
+                and `./mvnw fmt:check` (run in CI) fails the build if any file
+                is not formatted.
+
+                Why google-java-format?
+                - Zero configuration: one canonical style, no arguments.
+                - Opinionated column width (100 chars) eliminates style debates.
+                - Widely adopted in open-source and enterprise Java projects.
+
+                Version 2.25 (google-java-format 1.24.0) is required for
+                compatibility with JDK 21+. Earlier versions (2.23 and below)
+                fail with NoSuchMethodError on the internal javac API
+                com.sun.tools.javac.util.Log$DeferredDiagnosticHandler.
+
+                Usage:
+                  ./mvnw fmt:format   # reformat all sources in-place
+                  ./mvnw fmt:check    # verify formatting (non-destructive, CI-safe)
+            -->
+            <plugin>
+                <groupId>com.spotify.fmt</groupId>
+                <artifactId>fmt-maven-plugin</artifactId>
+                <version>2.25</version>
+                <configuration>
+                    <!--
+                        Include both main and test sources so that test files
+                        are formatted with the same style as production code.
+                    -->
+                    <sourceDirectory>${project.build.sourceDirectory}</sourceDirectory>
+                    <testSourceDirectory>${project.build.testSourceDirectory}</testSourceDirectory>
+                    <!--
+                        google-java-format style: GOOGLE (2-space indent) or
+                        AOSP (4-space indent, Android Open Source Project style).
+                        AOSP matches the 4-space indentation already used in
+                        this project.
+                    -->
+                    <style>AOSP</style>
+                    <!--
+                        Skip generated sources (JMH annotation processor output)
+                        to avoid modifying machine-generated files.
+                    -->
+                    <skipSortingImports>false</skipSortingImports>
+                </configuration>
+            </plugin>
+
+            <!--
+                maven-assembly-plugin: produces three executable fat-jars so the
+                shell scripts can invoke them without a class-path setup.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-assembly-plugin</artifactId>
+                <version>3.6.0</version>
+                <executions>
+
+                    <!-- Fat-jar for the same-process scenario -->
+                    <execution>
+                        <id>same-process-jar</id>
+                        <phase>package</phase>
+                        <goals><goal>single</goal></goals>
+                        <configuration>
+                            <finalName>player-same-process</finalName>
+                            <appendAssemblyId>false</appendAssemblyId>
+                            <archive>
+                                <manifest>
+                                    <mainClass>com.playermessaging.player.sameprocess.SameProcessMain</mainClass>
+                                </manifest>
+                            </archive>
+                            <descriptorRefs>
+                                <descriptorRef>jar-with-dependencies</descriptorRef>
+                            </descriptorRefs>
+                        </configuration>
+                    </execution>
+
+                    <!-- Fat-jar for the multi-process scenario -->
+                    <execution>
+                        <id>multi-process-jar</id>
+                        <phase>package</phase>
+                        <goals><goal>single</goal></goals>
+                        <configuration>
+                            <finalName>player-multi-process</finalName>
+                            <appendAssemblyId>false</appendAssemblyId>
+                            <archive>
+                                <manifest>
+                                    <mainClass>com.playermessaging.player.multiprocess.MultiProcessMain</mainClass>
+                                </manifest>
+                            </archive>
+                            <descriptorRefs>
+                                <descriptorRef>jar-with-dependencies</descriptorRef>
+                            </descriptorRefs>
+                        </configuration>
+                    </execution>
+
+                    <!-- Fat-jar for running JMH benchmarks -->
+                    <execution>
+                        <id>benchmark-jar</id>
+                        <phase>package</phase>
+                        <goals><goal>single</goal></goals>
+                        <configuration>
+                            <finalName>player-benchmark</finalName>
+                            <appendAssemblyId>false</appendAssemblyId>
+                            <archive>
+                                <manifest>
+                                    <mainClass>org.openjdk.jmh.Main</mainClass>
+                                </manifest>
+                            </archive>
+                            <descriptorRefs>
+                                <descriptorRef>jar-with-dependencies</descriptorRef>
+                            </descriptorRefs>
+                        </configuration>
+                    </execution>
+
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>
