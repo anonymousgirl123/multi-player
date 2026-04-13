@@ -1,0 +1,7 @@
+/*
+ * Gradle settings file — single-project build.
+ *
+ * This file marks the root of the Gradle project and gives it a name that
+ * matches the Maven artifactId so tooling (IDE, CI) identifies them consistently.
+ */
+rootProject.name = 'player-messaging'

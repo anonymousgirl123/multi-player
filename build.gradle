@@ -1,0 +1,295 @@
+/*
+ * build.gradle — Gradle equivalent of the Maven pom.xml.
+ *
+ * Feature parity with the Maven build:
+ *
+ *   Maven command              Gradle equivalent
+ *   ─────────────────────────  ──────────────────────────────────────────────
+ *   ./mvnw compile             ./gradlew compileJava
+ *   ./mvnw test                ./gradlew test
+ *   ./mvnw package             ./gradlew shadowJar   (builds all 3 fat-jars)
+ *   ./mvnw fmt:format          ./gradlew spotlessApply
+ *   ./mvnw fmt:check           ./gradlew spotlessCheck
+ *   ./mvnw verify              ./gradlew check       (test + spotlessCheck)
+ *
+ * Plugins used:
+ *   - java                           : standard Java compilation & test lifecycle
+ *   - com.github.johnrengelman.shadow : fat-jar creation (replaces maven-assembly-plugin)
+ *   - com.diffplug.spotless          : google-java-format AOSP style (replaces fmt-maven-plugin)
+ */
+
+// ─── Plugin declarations ──────────────────────────────────────────────────────
+
+plugins {
+    id 'java'
+
+    /*
+     * Shadow plugin — creates self-contained "fat jars" by merging all
+     * runtime dependencies into a single archive, exactly like Maven's
+     * maven-assembly-plugin with the jar-with-dependencies descriptor.
+     *
+     * We register three separate shadow-jar tasks (see "Fat-jar tasks" section):
+     *   shadowJarSameProcess   → player-same-process.jar
+     *   shadowJarMultiProcess  → player-multi-process.jar
+     *   shadowJarBenchmark     → player-benchmark.jar
+     */
+    id 'com.github.johnrengelman.shadow' version '8.1.1'
+
+    /*
+     * Spotless — wraps google-java-format exactly like the Spotify
+     * fmt-maven-plugin does on the Maven side.
+     *
+     *   ./gradlew spotlessApply   → reformat all Java source files in-place
+     *   ./gradlew spotlessCheck   → verify formatting (CI-safe, does not modify files)
+     *
+     * AOSP style (4-space indent) is used to match the Maven fmt:format configuration.
+     */
+    id 'com.diffplug.spotless' version '7.0.2'
+}
+
+// ─── Repositories ─────────────────────────────────────────────────────────────
+
+repositories {
+    /*
+     * Maven Central hosts all dependencies used by this project
+     * (SLF4J, Logback, JMH, JUnit 5).
+     */
+    mavenCentral()
+}
+
+// ─── Java toolchain & encoding ────────────────────────────────────────────────
+
+java {
+    /*
+     * Java 21 is required for virtual threads (Thread.ofVirtual(), JEP 444).
+     * Using toolchain instead of sourceCompatibility/targetCompatibility lets
+     * Gradle auto-provision the correct JDK via toolchain resolution if needed.
+     */
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+compileJava.options.encoding   = 'UTF-8'
+compileTestJava.options.encoding = 'UTF-8'
+
+// ─── Annotation processor (JMH) ───────────────────────────────────────────────
+
+/*
+ * The JMH annotation processor (jmh-generator-annprocess) reads @Benchmark
+ * annotations at compile time and writes META-INF/BenchmarkList so the JMH
+ * runner can discover benchmarks at runtime.
+ *
+ * In Maven this is done via <annotationProcessorPaths> in maven-compiler-plugin.
+ * In Gradle we use the built-in 'annotationProcessor' configuration.
+ */
+configurations {
+    annotationProcessor
+}
+
+// ─── Dependencies ─────────────────────────────────────────────────────────────
+
+dependencies {
+
+    // ── Logging ──────────────────────────────────────────────────────────────
+
+    /*
+     * SLF4J API — logging facade.
+     * Decouples application code from the logging implementation so the
+     * backend can be swapped without source changes.
+     */
+    implementation 'org.slf4j:slf4j-api:2.0.13'
+
+    /*
+     * Logback Classic — SLF4J implementation.
+     * Zero-configuration defaults, rich pattern layouts, automatic log rolling,
+     * and no severe CVE history (unlike Log4j / Log4Shell).
+     */
+    implementation 'ch.qos.logback:logback-classic:1.5.6'
+
+    // ── JMH (Java Microbenchmark Harness) ────────────────────────────────────
+
+    /*
+     * jmh-core — runtime library that drives the benchmark loop,
+     * handles JIT warm-up, dead-code elimination prevention, and
+     * statistical reporting.
+     */
+    implementation 'org.openjdk.jmh:jmh-core:1.37'
+
+    /*
+     * jmh-generator-annprocess — compile-time annotation processor.
+     * Equivalent to Maven's <scope>provided</scope>: needed at compile time
+     * but must NOT be packaged into the application fat-jars.
+     *
+     * 'compileOnly'        — on the compile classpath but excluded from outputs
+     * 'annotationProcessor'— tells the Java compiler to invoke the processor
+     */
+    compileOnly         'org.openjdk.jmh:jmh-generator-annprocess:1.37'
+    annotationProcessor 'org.openjdk.jmh:jmh-generator-annprocess:1.37'
+
+    // ── Testing ───────────────────────────────────────────────────────────────
+
+    /*
+     * JUnit Jupiter (JUnit 5) — test scope only; never included in fat-jars.
+     * 'testImplementation' is Gradle's equivalent of Maven's <scope>test</scope>.
+     */
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.11.0'
+
+    /*
+     * JUnit platform launcher — required by Gradle's test worker to run
+     * JUnit 5 tests via useJUnitPlatform().
+     */
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+// ─── Test configuration ───────────────────────────────────────────────────────
+
+test {
+    /*
+     * Activates the JUnit 5 (Jupiter) test engine.
+     * Equivalent to adding maven-surefire-plugin 3.x in Maven, which is the
+     * minimum version that discovers JUnit 5 classes automatically.
+     */
+    useJUnitPlatform()
+
+    /*
+     * Stream test events to the console so failures are visible without
+     * digging into build/reports/tests/test/index.html.
+     */
+    testLogging {
+        events 'passed', 'skipped', 'failed'
+        showStandardStreams = false
+        exceptionFormat = 'full'
+    }
+}
+
+// ─── Spotless — google-java-format (equivalent to mvn fmt:format) ──────────────
+
+spotless {
+    java {
+        /*
+         * google-java-format AOSP variant uses 4-space indentation, matching
+         * the <style>AOSP</style> configuration in the Maven fmt-maven-plugin.
+         *
+         * The Spotify fmt-maven-plugin wraps google-java-format v1.21.0
+         * (bundled inside fmt-maven-plugin 2.23). Spotless 7.x ships the same
+         * version so formatting output is byte-for-byte identical.
+         */
+        googleJavaFormat('1.21.0').aosp().reflowLongStrings()
+
+        /*
+         * Remove unused imports and sort the remaining ones — mirrors the
+         * <skipSortingImports>false</skipSortingImports> setting in Maven.
+         */
+        importOrder()
+        removeUnusedImports()
+
+        /*
+         * Apply to both main and test sources.
+         * Glob pattern mirrors Maven's <sourceDirectory> + <testSourceDirectory>.
+         */
+        target 'src/main/java/**/*.java', 'src/test/java/**/*.java'
+
+        /*
+         * Skip generated sources produced by the JMH annotation processor so
+         * machine-written files are never touched by the formatter.
+         */
+        targetExclude 'build/generated/**'
+    }
+}
+
+/*
+ * Make 'check' (the standard Gradle verification lifecycle task) also run
+ * spotlessCheck, so `./gradlew check` replicates `./mvnw verify` behaviour:
+ * tests + format verification in one command.
+ */
+check.dependsOn spotlessCheck
+
+// ─── Fat-jar tasks (replaces maven-assembly-plugin) ──────────────────────────
+
+/*
+ * Helper closure — applies common Shadow-jar configuration:
+ *   - excludes Maven metadata (pom.xml, pom.properties, *.SF, *.DSA, *.RSA)
+ *   - merges JMH's META-INF/BenchmarkList and CompilerHints service files so
+ *     the benchmark jar works correctly (JMH uses ServiceLoader internally)
+ */
+def configureShadowJar = { shadowTask, String mainClassName, String jarBaseName ->
+    shadowTask.archiveBaseName.set(jarBaseName)
+    shadowTask.archiveClassifier.set('')  // no "-all" suffix
+    shadowTask.archiveVersion.set('')     // no version suffix → plain name.jar
+
+    shadowTask.manifest {
+        attributes 'Main-Class': mainClassName
+    }
+
+    // Merge JMH service-loader files (required for the benchmark jar)
+    shadowTask.mergeServiceFiles()
+
+    // Drop Maven housekeeping metadata from bundled dependency jars
+    shadowTask.exclude 'META-INF/maven/**'
+    shadowTask.exclude 'META-INF/*.SF'
+    shadowTask.exclude 'META-INF/*.DSA'
+    shadowTask.exclude 'META-INF/*.RSA'
+}
+
+/*
+ * Fat-jar 1: Same-process scenario
+ * Equivalent Maven execution id: same-process-jar
+ * Output: build/libs/player-same-process.jar
+ */
+tasks.register('shadowJarSameProcess', com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar) {
+    group       = 'build'
+    description = 'Builds the same-process fat-jar (player-same-process.jar).'
+    from        sourceSets.main.output
+    configurations = [project.configurations.runtimeClasspath]
+    configureShadowJar(it,
+            'com.playermessaging.player.sameprocess.SameProcessMain',
+            'player-same-process')
+}
+
+/*
+ * Fat-jar 2: Multi-process scenario
+ * Equivalent Maven execution id: multi-process-jar
+ * Output: build/libs/player-multi-process.jar
+ */
+tasks.register('shadowJarMultiProcess', com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar) {
+    group       = 'build'
+    description = 'Builds the multi-process fat-jar (player-multi-process.jar).'
+    from        sourceSets.main.output
+    configurations = [project.configurations.runtimeClasspath]
+    configureShadowJar(it,
+            'com.playermessaging.player.multiprocess.MultiProcessMain',
+            'player-multi-process')
+}
+
+/*
+ * Fat-jar 3: JMH benchmark runner
+ * Equivalent Maven execution id: benchmark-jar
+ * Output: build/libs/player-benchmark.jar
+ *
+ * The main class is JMH's own runner (org.openjdk.jmh.Main) which discovers
+ * benchmarks via the META-INF/BenchmarkList file written by the annotation
+ * processor at compile time.  mergeServiceFiles() ensures that file survives
+ * the shading step.
+ */
+tasks.register('shadowJarBenchmark', com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar) {
+    group       = 'build'
+    description = 'Builds the JMH benchmark fat-jar (player-benchmark.jar).'
+    from        sourceSets.main.output
+    configurations = [project.configurations.runtimeClasspath]
+    configureShadowJar(it,
+            'org.openjdk.jmh.Main',
+            'player-benchmark')
+}
+
+/*
+ * Wire all three fat-jar tasks into the standard 'build' lifecycle so that
+ * `./gradlew build` produces all three jars — matching `./mvnw package`.
+ */
+build.dependsOn shadowJarSameProcess, shadowJarMultiProcess, shadowJarBenchmark
+
+/*
+ * Disable the default shadowJar task that the Shadow plugin registers (it
+ * would produce a fourth, unwanted jar).  We manage three named tasks instead.
+ */
+shadowJar.enabled = false
