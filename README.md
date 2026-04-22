@@ -3,6 +3,7 @@
 A Java 21 demonstration of two player-to-player messaging models:
 
 1. **Same-process** — two or more players exchange messages as virtual threads inside a single JVM, communicating through bounded in-memory queues.
+
 2. **Multi-process** — two players run in separate JVM processes (or separate containers) and communicate over a TCP socket using a length-prefixed binary wire protocol.
 
 The codebase showcases five classic GoF design patterns applied to real production concerns: **Observer**, **Decorator**, **Chain of Responsibility**, **Abstract Factory**, and **Builder**.
