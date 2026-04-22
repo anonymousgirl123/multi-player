@@ -650,4 +650,6 @@ The following are deliberate out-of-scope items given the demonstration focus of
 | **Metrics endpoint** | Expose `MetricsEventListener` counters over HTTP (e.g. Prometheus `/metrics`) | Makes broker throughput observable in production without log scraping |
 | **Structured logging** | Switch Logback appender to JSON format (e.g. `logstash-logback-encoder`) | Machine-readable logs that feed directly into ELK / Splunk without parsing |
 | **Distributed tracing** | Embed a correlation ID in `Message` and propagate it through the chain | Allows end-to-end request tracing across players and processes |
+
 # multi-player
+
